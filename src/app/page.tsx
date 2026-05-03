@@ -14,6 +14,8 @@ import {
 
 type SortMode = "likes" | "ratio";
 type DurationFilter = "all" | "short" | "long";
+type SortKey = "likes" | "views" | "ratio" | "duration" | "publishedAt";
+type SortConfig = { key: SortKey; direction: "asc" | "desc" } | null;
 
 export default function HomePage() {
   const [channelUrl, setChannelUrl] = useState("");
@@ -23,6 +25,7 @@ export default function HomePage() {
   const [maxVideos, setMaxVideos] = useState(50);
   const [sortMode, setSortMode] = useState<SortMode>("likes");
   const [darkMode, setDarkMode] = useState(false);
+  const [sortConfig, setSortConfig] = useState<SortConfig>(null);
 
   // Filters
   const [searchQuery, setSearchQuery] = useState("");
@@ -89,9 +92,9 @@ export default function HomePage() {
     }
   }
 
-  // Client-side filtering
+  // Client-side filtering and sorting
   const filteredVideos = useMemo(() => {
-    return videos.filter((v) => {
+    let result = videos.filter((v) => {
       if (searchQuery && !v.title.toLowerCase().includes(searchQuery.toLowerCase())) return false;
       if (v.views < minViews) return false;
       if (durationFilter !== "all") {
@@ -101,7 +104,47 @@ export default function HomePage() {
       }
       return true;
     });
-  }, [videos, searchQuery, minViews, durationFilter]);
+
+    if (sortConfig !== null) {
+      result.sort((a, b) => {
+        let aValue: number;
+        let bValue: number;
+        
+        if (sortConfig.key === 'ratio') {
+          aValue = a.views > 0 ? a.likes / a.views : 0;
+          bValue = b.views > 0 ? b.likes / b.views : 0;
+        } else if (sortConfig.key === 'duration') {
+          aValue = parseDuration(a.duration);
+          bValue = parseDuration(b.duration);
+        } else if (sortConfig.key === 'publishedAt') {
+          aValue = new Date(a.publishedAt).getTime();
+          bValue = new Date(b.publishedAt).getTime();
+        } else {
+          aValue = a[sortConfig.key] as number;
+          bValue = b[sortConfig.key] as number;
+        }
+
+        if (aValue < bValue) return sortConfig.direction === "asc" ? -1 : 1;
+        if (aValue > bValue) return sortConfig.direction === "asc" ? 1 : -1;
+        return 0;
+      });
+    }
+
+    return result;
+  }, [videos, searchQuery, minViews, durationFilter, sortConfig]);
+
+  const requestSort = (key: SortKey) => {
+    let direction: "asc" | "desc" = "desc"; // Default to desc for metrics
+    if (sortConfig && sortConfig.key === key && sortConfig.direction === "desc") {
+      direction = "asc";
+    }
+    setSortConfig({ key, direction });
+  };
+
+  const getSortIcon = (key: SortKey) => {
+    if (!sortConfig || sortConfig.key !== key) return "↕";
+    return sortConfig.direction === "asc" ? "↑" : "↓";
+  };
 
   const hasResults = filteredVideos.length > 0;
 
@@ -235,7 +278,7 @@ export default function HomePage() {
 
         {/* Results */}
         {videos.length > 0 && (
-          <div className="w-full max-w-5xl relative animate-fade-in">
+          <div className="w-full max-w-7xl relative animate-fade-in">
             <div
               className="w-full h-full absolute inset-0 rounded-xl translate-y-2 translate-x-2"
               style={{ background: "var(--shadow-color)" }}
@@ -331,17 +374,27 @@ export default function HomePage() {
 
               {/* Table */}
               <div className="overflow-x-auto">
-                <table className="w-full border-collapse text-xs sm:text-sm">
+                <table className="w-full border-collapse text-sm sm:text-base">
                   <thead>
                     <tr className="border-b-[3px]" style={{ borderColor: "var(--accent-color)" }}>
                       <th className="px-2 py-3 text-left font-bold w-8">#</th>
-                      <th className="px-2 py-3 text-left font-bold hidden sm:table-cell w-20">Thumb</th>
+                      <th className="px-2 py-3 text-left font-bold hidden sm:table-cell w-24">Thumb</th>
                       <th className="px-2 py-3 text-left font-bold">Title</th>
-                      <th className="px-2 py-3 text-right font-bold">Likes</th>
-                      <th className="px-2 py-3 text-right font-bold">Views</th>
-                      <th className="px-2 py-3 text-right font-bold">Ratio</th>
-                      <th className="px-2 py-3 text-right font-bold hidden md:table-cell">Duration</th>
-                      <th className="px-2 py-3 text-right font-bold hidden lg:table-cell">Date</th>
+                      <th className="px-2 py-3 text-right font-bold cursor-pointer hover:underline" onClick={() => requestSort('likes')}>
+                        Likes {getSortIcon('likes')}
+                      </th>
+                      <th className="px-2 py-3 text-right font-bold cursor-pointer hover:underline" onClick={() => requestSort('views')}>
+                        Views {getSortIcon('views')}
+                      </th>
+                      <th className="px-2 py-3 text-right font-bold cursor-pointer hover:underline" onClick={() => requestSort('ratio')}>
+                        Ratio {getSortIcon('ratio')}
+                      </th>
+                      <th className="px-2 py-3 text-right font-bold hidden md:table-cell cursor-pointer hover:underline" onClick={() => requestSort('duration')}>
+                        Duration {getSortIcon('duration')}
+                      </th>
+                      <th className="px-2 py-3 text-right font-bold hidden lg:table-cell cursor-pointer hover:underline" onClick={() => requestSort('publishedAt')}>
+                        Date {getSortIcon('publishedAt')}
+                      </th>
                     </tr>
                   </thead>
                   <tbody>
