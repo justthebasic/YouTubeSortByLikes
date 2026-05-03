@@ -1,268 +1,473 @@
 "use client";
 
-import { useState, useEffect } from "react";
-import { decodeHtmlEntities } from "@/lib/utils";
+import { useState, useEffect, useMemo, useCallback } from "react";
+import {
+  decodeHtmlEntities,
+  parseDuration,
+  formatDuration,
+  formatNumber,
+  formatDate,
+  exportToCSV,
+  exportToJSON,
+  VideoData,
+} from "@/lib/utils";
 
-/**
- * A modern, single-page UI for "YouTube Sort By Likes",
- * created by Tim (https://github.com/timf34).
- *
- * Monospace-inspired design with blocky elements and fun interactions.
- */
-
-interface Video {
-  title: string;
-  videoId: string;
-  views: number;
-  likes: number;
-}
+type SortMode = "likes" | "ratio";
+type DurationFilter = "all" | "short" | "long";
 
 export default function HomePage() {
   const [channelUrl, setChannelUrl] = useState("");
-  const [videos, setVideos] = useState<Video[]>([]);
+  const [videos, setVideos] = useState<VideoData[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [maxVideos, setMaxVideos] = useState(50);
-  const [starCount, setStarCount] = useState<string | null>(null);
+  const [sortMode, setSortMode] = useState<SortMode>("likes");
+  const [darkMode, setDarkMode] = useState(false);
 
+  // Filters
+  const [searchQuery, setSearchQuery] = useState("");
+  const [minViews, setMinViews] = useState(0);
+  const [durationFilter, setDurationFilter] = useState<DurationFilter>("all");
+  const [showFilters, setShowFilters] = useState(false);
+
+  // Dark mode init
   useEffect(() => {
-    fetch("https://api.github.com/repos/timf34/YouTubeSortByLikes")
-      .then((res) => {
-        if (!res.ok) throw new Error("Failed to fetch");
-        return res.json();
-      })
-      .then((data) => {
-        const count = data.stargazers_count;
-        setStarCount(count >= 1000 ? `${(count / 1000).toFixed(1)}k` : String(count));
-      })
-      .catch(() => {
-        // Silently fail — just don't show the star count
-      });
+    setDarkMode(document.documentElement.classList.contains("dark"));
+  }, []);
+
+  const toggleDarkMode = useCallback(() => {
+    const next = !darkMode;
+    setDarkMode(next);
+    document.documentElement.classList.toggle("dark", next);
+    localStorage.setItem("theme", next ? "dark" : "light");
+  }, [darkMode]);
+
+  // Read URL params on mount
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const ch = params.get("channel");
+    const sort = params.get("sort") as SortMode | null;
+    const max = params.get("max");
+    if (ch) setChannelUrl(ch);
+    if (sort === "likes" || sort === "ratio") setSortMode(sort);
+    if (max) setMaxVideos(Math.min(350, Math.max(50, Number(max))));
   }, []);
 
   const getSliderBackground = (value: number) => {
-    const percentage = ((value - 50) / (350 - 50)) * 100;
-    return `linear-gradient(to right, #ef4444  ${percentage}%, #FAFAFA ${percentage}%)`;
+    const pct = ((value - 50) / 300) * 100;
+    return `linear-gradient(to right, var(--accent-color) ${pct}%, var(--slider-track) ${pct}%)`;
   };
 
-  async function fetchVideos(sortMode: "likes" | "ratio") {
-    try {
-      setLoading(true);
-      setError(null);
-      setVideos([]);
+  async function fetchVideos(mode: SortMode) {
+    if (!channelUrl.trim()) return;
+    setSortMode(mode);
+    setLoading(true);
+    setError(null);
+    setVideos([]);
 
-      const queryParams = new URLSearchParams({
+    // Update shareable URL
+    const url = new URL(window.location.href);
+    url.searchParams.set("channel", channelUrl.trim());
+    url.searchParams.set("sort", mode);
+    url.searchParams.set("max", maxVideos.toString());
+    window.history.replaceState({}, "", url.toString());
+
+    try {
+      const qp = new URLSearchParams({
         channelUrl: channelUrl.trim(),
-        sortMode: sortMode === "ratio" ? "ratio" : "likes",
+        sortMode: mode,
         maxVideos: maxVideos.toString(),
       });
-
-      const res = await fetch(`/api/videos?${queryParams}`);
+      const res = await fetch(`/api/videos?${qp}`);
       const data = await res.json();
-
-      if (!res.ok) {
-        throw new Error(data.error || "Something went wrong");
-      }
+      if (!res.ok) throw new Error(data.error || "Something went wrong");
       setVideos(data.data);
     } catch (err: unknown) {
-      const error = err instanceof Error ? err.message : "Something went wrong";
-      setError(error);
+      setError(err instanceof Error ? err.message : "Something went wrong");
     } finally {
       setLoading(false);
     }
   }
 
+  // Client-side filtering
+  const filteredVideos = useMemo(() => {
+    return videos.filter((v) => {
+      if (searchQuery && !v.title.toLowerCase().includes(searchQuery.toLowerCase())) return false;
+      if (v.views < minViews) return false;
+      if (durationFilter !== "all") {
+        const secs = parseDuration(v.duration);
+        if (durationFilter === "short" && secs > 60) return false;
+        if (durationFilter === "long" && secs <= 60) return false;
+      }
+      return true;
+    });
+  }, [videos, searchQuery, minViews, durationFilter]);
+
+  const hasResults = filteredVideos.length > 0;
+
   return (
-    <div className="relative min-h-screen flex flex-col bg-white text-gray-900 font-mono">
-      {/* Header with Title and GitHub Link */}
-      <header className="w-full bg-gray-100 border-b-[3px] border-gray-900">
+    <div
+      className="relative min-h-screen flex flex-col font-mono"
+      style={{ background: "var(--bg-primary)", color: "var(--text-primary)" }}
+    >
+      {/* Header */}
+      <header
+        className="w-full border-b-[3px]"
+        style={{ background: "var(--bg-secondary)", borderColor: "var(--border-color)" }}
+      >
         <div className="container mx-auto px-4 py-4 flex items-center justify-between">
-          <h1 className="text-2xl md:text-3xl font-bold tracking-tight text-gray-900]">
-            YouTube Sort By Likes
-          </h1>
-          <div className="flex items-center gap-2">
+          <h1 className="text-2xl md:text-3xl font-bold tracking-tight">YouTube Sort By Likes</h1>
+          <div className="flex items-center gap-3">
+            {/* Dark mode toggle */}
+            <button
+              onClick={toggleDarkMode}
+              className="p-2 rounded-lg border-[2px] transition-transform hover:-translate-y-px"
+              style={{ borderColor: "var(--border-color)", background: "var(--bg-card)" }}
+              aria-label="Toggle dark mode"
+            >
+              {darkMode ? (
+                <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
+                  <path d="M10 2a1 1 0 011 1v1a1 1 0 11-2 0V3a1 1 0 011-1zm4 8a4 4 0 11-8 0 4 4 0 018 0zm-.464 4.95l.707.707a1 1 0 001.414-1.414l-.707-.707a1 1 0 00-1.414 1.414zm2.12-10.607a1 1 0 010 1.414l-.706.707a1 1 0 11-1.414-1.414l.707-.707a1 1 0 011.414 0zM17 11a1 1 0 100-2h-1a1 1 0 100 2h1zm-7 4a1 1 0 011 1v1a1 1 0 11-2 0v-1a1 1 0 011-1zM5.05 6.464A1 1 0 106.465 5.05l-.708-.707a1 1 0 00-1.414 1.414l.707.707zm1.414 8.486l-.707.707a1 1 0 01-1.414-1.414l.707-.707a1 1 0 011.414 1.414zM4 11a1 1 0 100-2H3a1 1 0 000 2h1z" />
+                </svg>
+              ) : (
+                <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
+                  <path d="M17.293 13.293A8 8 0 016.707 2.707a8.001 8.001 0 1010.586 10.586z" />
+                </svg>
+              )}
+            </button>
+            {/* GitHub */}
             <a
-              href="https://github.com/timf34/YouTubeSortByLikes"
+              href="https://github.com/justthebasic/YouTubeSortByLikes"
               target="_blank"
               rel="noreferrer"
-              className="flex items-center space-x-2 text-gray-900 hover:-translate-y-px transition-transform"
+              className="flex items-center gap-2 hover:-translate-y-px transition-transform"
             >
               <svg className="w-5 h-5" viewBox="0 0 24 24" fill="currentColor">
-                <path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/>
+                <path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z" />
               </svg>
-              <span className="font-medium hidden sm:inline">View on GitHub</span>
+              <span className="font-medium hidden sm:inline">GitHub</span>
             </a>
-            {starCount !== null && (
-              <div className="flex items-center text-sm text-gray-600 select-none">
-                <svg className="w-4 h-4 mr-1" fill="currentColor" viewBox="0 0 20 20">
-                  <path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z"/>
-                </svg>
-                {starCount}
-              </div>
-            )}
           </div>
         </div>
       </header>
 
-      {/* Main content container */}
-      <main className="flex-1 z-10 container mx-auto px-6 py-12 flex flex-col items-center">
-        {/* Search Section */}
-        <div className="w-full max-w-3xl relative mb-16">
-          <div className="w-full h-full absolute inset-0 bg-gray-900 rounded-xl translate-y-2 translate-x-2"></div>
-          <div className="bg-white rounded-xl border-[3px] border-gray-900 p-8 relative z-20">
-            <p className="text-center text-gray-700 mb-6">
-              Find the best quality videos from any channel! 
-              Paste a YouTube channel URL below to get started!
+      {/* Main */}
+      <main className="flex-1 container mx-auto px-4 sm:px-6 py-8 sm:py-12 flex flex-col items-center">
+        {/* Search Card */}
+        <div className="w-full max-w-3xl relative mb-10">
+          <div
+            className="w-full h-full absolute inset-0 rounded-xl translate-y-2 translate-x-2"
+            style={{ background: "var(--shadow-color)" }}
+          />
+          <div
+            className="rounded-xl border-[3px] p-6 sm:p-8 relative z-20"
+            style={{ background: "var(--bg-card)", borderColor: "var(--border-color)" }}
+          >
+            <p className="text-center mb-6" style={{ color: "var(--text-secondary)" }}>
+              Find the best quality videos from any channel! Paste a YouTube channel URL below.
             </p>
-            
-            <form onSubmit={(e) => { e.preventDefault(); fetchVideos("likes"); }} className="space-y-6">
+
+            <form onSubmit={(e) => { e.preventDefault(); fetchVideos(sortMode); }} className="space-y-5">
+              {/* URL Input */}
               <div className="relative">
-                <div className="w-full h-full rounded bg-gray-900 translate-y-1 translate-x-1 absolute inset-0"></div>
+                <div
+                  className="w-full h-full rounded absolute inset-0 translate-y-1 translate-x-1"
+                  style={{ background: "var(--shadow-color)" }}
+                />
                 <input
                   type="text"
                   placeholder="e.g. https://www.youtube.com/@veritasium"
                   value={channelUrl}
                   onChange={(e) => setChannelUrl(e.target.value)}
-                  className="block w-full rounded border-[3px] border-gray-900 px-6 py-4 bg-white text-gray-900
-                           relative z-10 focus:outline-none focus:translate-x-0 focus:translate-y-0
-                           transition-transform placeholder-gray-400 text-xs md:text-lg"
+                  className="block w-full rounded border-[3px] px-5 py-3.5 relative z-10 focus:outline-none transition-transform placeholder:opacity-50 text-sm md:text-base"
+                  style={{
+                    borderColor: "var(--border-color)",
+                    background: "var(--input-bg)",
+                    color: "var(--text-primary)",
+                  }}
                 />
               </div>
 
-              {/* Add slider for max videos */}
-              <div className="w-full mt-3">
-                <label htmlFor="max_videos" className="block text-gray-700 mb-1">
-                  Number of videos to fetch: <span className="font-bold">{maxVideos}</span>
+              {/* Slider */}
+              <div>
+                <label htmlFor="max_videos" className="block mb-1 text-sm" style={{ color: "var(--text-secondary)" }}>
+                  Videos to fetch: <span className="font-bold" style={{ color: "var(--text-primary)" }}>{maxVideos}</span>
                 </label>
-                <div className="relative">
-                  <input
-                    type="range"
-                    id="max_videos"
-                    name="max_videos"
-                    min="50"
-                    max="350"
-                    step="50"
-                    value={maxVideos}
-                    onChange={(e) => setMaxVideos(Number(e.target.value))}
-                    style={{ background: getSliderBackground(maxVideos) }}
-                    className="w-full h-3 appearance-none border-[3px] border-gray-900 rounded-sm
-                             focus:outline-none
-                             [&::-webkit-slider-thumb]:w-5 [&::-webkit-slider-thumb]:h-7
-                             [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:bg-red-500
-                             [&::-webkit-slider-thumb]:rounded-sm [&::-webkit-slider-thumb]:cursor-pointer
-                             [&::-webkit-slider-thumb]:border-solid [&::-webkit-slider-thumb]:border-[3px]
-                             [&::-webkit-slider-thumb]:border-gray-900 [&::-webkit-slider-thumb]:shadow-[2px_2px_0_#000]"
-                  />
-                </div>
+                <input
+                  type="range"
+                  id="max_videos"
+                  min="50"
+                  max="350"
+                  step="50"
+                  value={maxVideos}
+                  onChange={(e) => setMaxVideos(Number(e.target.value))}
+                  style={{ background: getSliderBackground(maxVideos) }}
+                />
               </div>
 
-              <div className="grid grid-cols-2 gap-4">
-                <div className="relative group h-full">
-                  <div className="w-full h-full rounded bg-gray-900 translate-y-1 translate-x-1 absolute inset-0"></div>
-                  <button
-                    type="submit"
-                    className="w-full h-full bg-gray-100 text-gray-900 font-medium px-4 py-4 rounded
-                             border-[3px] border-gray-900 relative z-10 group-hover:-translate-y-px
-                             group-hover:-translate-x-px transition-transform text-sm md:text-lg flex items-center justify-center"
-                  >
-                    Sort by Likes
-                  </button>
-                </div>
-                <div className="relative group h-full">
-                  <div className="w-full h-full rounded bg-gray-900 translate-y-1 translate-x-1 absolute inset-0"></div>
-                  <button
-                    type="button"
-                    onClick={() => fetchVideos("ratio")}
-                    className="w-full h-full bg-red-600 text-white font-medium px-4 py-4 rounded
-                             border-[3px] border-gray-900 relative z-10 group-hover:-translate-y-px
-                             group-hover:-translate-x-px transition-transform text-sm md:text-lg flex items-center justify-center"
-                  >
-                    Sort by Like:View Ratio
-                  </button>
-                </div>
+              {/* Buttons */}
+              <div className="grid grid-cols-2 gap-3">
+                <BrutalButton onClick={() => fetchVideos("likes")} type="submit" variant="secondary">
+                  Sort by Likes
+                </BrutalButton>
+                <BrutalButton onClick={() => fetchVideos("ratio")} type="button" variant="primary">
+                  Sort by Ratio
+                </BrutalButton>
               </div>
             </form>
 
-
-            {/* Loading or Error */}
+            {/* Loading */}
             {loading && (
-              <div className="mt-6 text-center animate-pulse">
-                <div className="inline-block w-5 h-5 border-2 border-red-600 border-t-transparent rounded-full animate-spin"></div>
-                <span className="ml-2 text-red-600">Loading...</span>
+              <div className="mt-6 text-center animate-fade-in">
+                <div className="inline-block w-5 h-5 border-2 border-t-transparent rounded-full animate-spin" style={{ borderColor: "var(--accent-color)", borderTopColor: "transparent" }} />
+                <span className="ml-2 text-sm" style={{ color: "var(--accent-color)" }}>
+                  Fetching up to {maxVideos} videos... This may take a moment.
+                </span>
               </div>
             )}
             {error && (
-              <div className="mt-6 p-4 bg-gray-900 border-[3px] border-red-600 rounded text-red-600">
+              <div className="mt-6 p-4 rounded border-[3px] text-sm" style={{ borderColor: "var(--accent-color)", color: "var(--accent-color)", background: "var(--bg-secondary)" }}>
                 Error: {error}
               </div>
             )}
           </div>
         </div>
 
-        {/* Results Table */}
+        {/* Results */}
         {videos.length > 0 && (
-          <div className="w-full max-w-4xl relative">
-            <div className="w-full h-full absolute inset-0 bg-gray-900 rounded-xl translate-y-2 translate-x-2"></div>
-            <div className="bg-white rounded-xl border-[3px] border-gray-900 p-4 relative z-20">
+          <div className="w-full max-w-5xl relative animate-fade-in">
+            <div
+              className="w-full h-full absolute inset-0 rounded-xl translate-y-2 translate-x-2"
+              style={{ background: "var(--shadow-color)" }}
+            />
+            <div
+              className="rounded-xl border-[3px] p-4 relative z-20"
+              style={{ background: "var(--bg-card)", borderColor: "var(--border-color)" }}
+            >
+              {/* Toolbar: filters + export */}
+              <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
+                <div className="flex items-center gap-2">
+                  <span className="text-sm font-bold">
+                    {filteredVideos.length} of {videos.length} videos
+                  </span>
+                  <button
+                    onClick={() => setShowFilters(!showFilters)}
+                    className="text-xs px-3 py-1.5 rounded border-[2px] font-medium transition-transform hover:-translate-y-px"
+                    style={{ borderColor: "var(--border-color)", background: "var(--bg-secondary)" }}
+                  >
+                    {showFilters ? "Hide Filters" : "Filters"}
+                  </button>
+                </div>
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => exportToCSV(filteredVideos)}
+                    className="text-xs px-3 py-1.5 rounded border-[2px] font-medium transition-transform hover:-translate-y-px"
+                    style={{ borderColor: "var(--border-color)", background: "var(--bg-secondary)" }}
+                  >
+                    📥 CSV
+                  </button>
+                  <button
+                    onClick={() => exportToJSON(filteredVideos)}
+                    className="text-xs px-3 py-1.5 rounded border-[2px] font-medium transition-transform hover:-translate-y-px"
+                    style={{ borderColor: "var(--border-color)", background: "var(--bg-secondary)" }}
+                  >
+                    📥 JSON
+                  </button>
+                </div>
+              </div>
+
+              {/* Filters panel */}
+              {showFilters && (
+                <div
+                  className="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-4 p-4 rounded-lg border-[2px] animate-fade-in"
+                  style={{ borderColor: "var(--border-light)", background: "var(--bg-secondary)" }}
+                >
+                  <div>
+                    <label className="block text-xs font-bold mb-1">Search title</label>
+                    <input
+                      type="text"
+                      placeholder="Filter by title..."
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                      className="w-full px-3 py-2 rounded border-[2px] text-xs focus:outline-none"
+                      style={{ borderColor: "var(--border-color)", background: "var(--input-bg)", color: "var(--text-primary)" }}
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold mb-1">
+                      Min views: {formatNumber(minViews)}
+                    </label>
+                    <input
+                      type="range"
+                      min="0"
+                      max="1000000"
+                      step="10000"
+                      value={minViews}
+                      onChange={(e) => setMinViews(Number(e.target.value))}
+                      style={{ background: getSliderBackground(50) }}
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold mb-1">Duration</label>
+                    <div className="flex gap-1">
+                      {(["all", "short", "long"] as DurationFilter[]).map((f) => (
+                        <button
+                          key={f}
+                          onClick={() => setDurationFilter(f)}
+                          className="flex-1 text-xs px-2 py-2 rounded border-[2px] font-medium transition-colors"
+                          style={{
+                            borderColor: "var(--border-color)",
+                            background: durationFilter === f ? "var(--accent-color)" : "var(--bg-card)",
+                            color: durationFilter === f ? "#fff" : "var(--text-primary)",
+                          }}
+                        >
+                          {f === "all" ? "All" : f === "short" ? "Shorts" : "Long"}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Table */}
               <div className="overflow-x-auto">
-                <table className="w-full border-collapse">
+                <table className="w-full border-collapse text-xs sm:text-sm">
                   <thead>
-                    <tr className="border-b-[3px] border-red-600">
-                      <th className="px-2 sm:px-4 py-3 text-left font-bold text-gray-900 text-xs sm:text-base">Video Title</th>
-                      <th className="px-2 sm:px-4 py-3 text-left font-bold text-gray-900 text-xs sm:text-base">Likes</th>
-                      <th className="px-2 sm:px-4 py-3 text-left font-bold text-gray-900 text-xs sm:text-base">Views</th>
-                      <th className="px-2 sm:px-4 py-3 text-left font-bold text-gray-900 text-xs sm:text-base">Ratio (%)</th>
+                    <tr className="border-b-[3px]" style={{ borderColor: "var(--accent-color)" }}>
+                      <th className="px-2 py-3 text-left font-bold w-8">#</th>
+                      <th className="px-2 py-3 text-left font-bold hidden sm:table-cell w-20">Thumb</th>
+                      <th className="px-2 py-3 text-left font-bold">Title</th>
+                      <th className="px-2 py-3 text-right font-bold">Likes</th>
+                      <th className="px-2 py-3 text-right font-bold">Views</th>
+                      <th className="px-2 py-3 text-right font-bold">Ratio</th>
+                      <th className="px-2 py-3 text-right font-bold hidden md:table-cell">Duration</th>
+                      <th className="px-2 py-3 text-right font-bold hidden lg:table-cell">Date</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {videos.map((v, idx) => {
-                      const ratio = v.views === 0 ? 0 : ((v.likes / v.views) * 100).toFixed(2);
+                    {filteredVideos.map((v, idx) => {
+                      const ratio = v.views > 0 ? ((v.likes / v.views) * 100).toFixed(2) : "0.00";
+                      const durationSecs = parseDuration(v.duration);
                       return (
                         <tr
-                          key={idx}
-                          className="border-b border-gray-200 last:border-b-0 hover:bg-gray-50 transition-colors"
+                          key={v.videoId}
+                          className="border-b transition-colors"
+                          style={{ borderColor: "var(--border-light)" }}
+                          onMouseEnter={(e) => (e.currentTarget.style.background = "var(--hover-bg)")}
+                          onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
                         >
-                          <td className="px-2 sm:px-4 py-3">
+                          <td className="px-2 py-2.5 font-bold" style={{ color: "var(--text-muted)" }}>
+                            {idx + 1}
+                          </td>
+                          <td className="px-2 py-2.5 hidden sm:table-cell">
+                            {v.thumbnail && (
+                              <img
+                                src={v.thumbnail}
+                                alt=""
+                                width={80}
+                                height={45}
+                                className="rounded border-[2px]"
+                                style={{ borderColor: "var(--border-light)" }}
+                                loading="lazy"
+                              />
+                            )}
+                          </td>
+                          <td className="px-2 py-2.5 max-w-[200px] sm:max-w-[350px]">
                             <a
                               href={`https://www.youtube.com/watch?v=${v.videoId}`}
                               target="_blank"
                               rel="noreferrer"
-                              className="text-gray-900 hover:text-red-500 underline underline-offset-2 text-xs sm:text-base"
+                              className="hover:underline underline-offset-2 line-clamp-2"
+                              style={{ color: "var(--text-primary)" }}
+                              onMouseEnter={(e) => (e.currentTarget.style.color = "var(--accent-color)")}
+                              onMouseLeave={(e) => (e.currentTarget.style.color = "var(--text-primary)")}
                             >
                               {decodeHtmlEntities(v.title)}
                             </a>
                           </td>
-                          <td className="px-2 sm:px-4 py-3 font-medium text-gray-900 text-xs sm:text-base">{v.likes.toLocaleString()}</td>
-                          <td className="px-2 sm:px-4 py-3 text-gray-900 text-xs sm:text-base">{v.views.toLocaleString()}</td>
-                          <td className="px-2 sm:px-4 py-3 font-medium text-gray-900 text-xs sm:text-base">{ratio}%</td>
+                          <td className="px-2 py-2.5 text-right font-medium tabular-nums">
+                            {formatNumber(v.likes)}
+                          </td>
+                          <td className="px-2 py-2.5 text-right tabular-nums" style={{ color: "var(--text-secondary)" }}>
+                            {formatNumber(v.views)}
+                          </td>
+                          <td className="px-2 py-2.5 text-right font-medium tabular-nums">
+                            {ratio}%
+                          </td>
+                          <td className="px-2 py-2.5 text-right tabular-nums hidden md:table-cell" style={{ color: "var(--text-secondary)" }}>
+                            {formatDuration(durationSecs)}
+                          </td>
+                          <td className="px-2 py-2.5 text-right tabular-nums hidden lg:table-cell" style={{ color: "var(--text-muted)" }}>
+                            {formatDate(v.publishedAt)}
+                          </td>
                         </tr>
                       );
                     })}
                   </tbody>
                 </table>
               </div>
+
+              {filteredVideos.length === 0 && videos.length > 0 && (
+                <p className="text-center py-8 text-sm" style={{ color: "var(--text-muted)" }}>
+                  No videos match your filters. Try adjusting them.
+                </p>
+              )}
             </div>
           </div>
         )}
       </main>
 
       {/* Footer */}
-      <footer className="relative z-10 border-t-[3px] border-gray-900 mt-12">
-        <div className="container mx-auto px-6 py-4 flex flex-col items-center justify-center">
-          <p className="text-gray-400">
-            Created by{" "}
-            <a
-              className="text-[#ef4444] font-medium hover:text-gray-900 underline underline-offset-2"
-              href="https://github.com/timf34"
-              target="_blank"
-              rel="noreferrer"
-            >
+      <footer className="relative z-10 border-t-[3px] mt-12" style={{ borderColor: "var(--border-color)" }}>
+        <div className="container mx-auto px-6 py-4 flex flex-col items-center">
+          <p className="text-sm" style={{ color: "var(--text-muted)" }}>
+            Originally by{" "}
+            <a className="underline underline-offset-2" style={{ color: "var(--accent-color)" }} href="https://github.com/timf34" target="_blank" rel="noreferrer">
               Tim
             </a>
-            . © {new Date().getFullYear()}
+            {" · "}Fork by{" "}
+            <a className="underline underline-offset-2" style={{ color: "var(--accent-color)" }} href="https://github.com/justthebasic" target="_blank" rel="noreferrer">
+              justthebasic
+            </a>
+            {" · "}© {new Date().getFullYear()}
           </p>
         </div>
       </footer>
+    </div>
+  );
+}
+
+/* ── Reusable neo-brutalist button ── */
+function BrutalButton({
+  children,
+  onClick,
+  type = "button",
+  variant = "primary",
+}: {
+  children: React.ReactNode;
+  onClick: () => void;
+  type?: "button" | "submit";
+  variant?: "primary" | "secondary";
+}) {
+  const isPrimary = variant === "primary";
+  return (
+    <div className="relative group h-full">
+      <div
+        className="w-full h-full rounded absolute inset-0 translate-y-1 translate-x-1"
+        style={{ background: "var(--shadow-color)" }}
+      />
+      <button
+        type={type}
+        onClick={onClick}
+        className="w-full h-full font-medium px-4 py-3.5 rounded border-[3px] relative z-10 group-hover:-translate-y-px group-hover:-translate-x-px transition-transform text-sm md:text-base flex items-center justify-center"
+        style={{
+          borderColor: "var(--border-color)",
+          background: isPrimary ? "var(--accent-color)" : "var(--bg-secondary)",
+          color: isPrimary ? "#ffffff" : "var(--text-primary)",
+        }}
+      >
+        {children}
+      </button>
     </div>
   );
 }
