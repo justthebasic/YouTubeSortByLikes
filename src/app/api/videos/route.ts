@@ -2,13 +2,12 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getChannelIdFromUrl } from '@/lib/getChannelId';
 
-// Add these interfaces before the GET function
-interface YouTubeVideoItem {
-  id: {
-    videoId: string;
-  };
+interface YouTubeSearchItem {
+  id: { videoId: string };
   snippet: {
     title: string;
+    publishedAt: string;
+    thumbnails: { medium: { url: string } };
   };
 }
 
@@ -16,17 +15,86 @@ interface ApiError extends Error {
   status?: number;
 }
 
+// --- In-memory rate limiter (per-process, no external deps) ---
+const rateLimitMap = new Map<string, { count: number; resetTime: number }>();
+const RATE_LIMIT_WINDOW = 60_000; // 1 minute
+const RATE_LIMIT_MAX = 10;
+
+function checkRateLimit(ip: string): boolean {
+  const now = Date.now();
+  const entry = rateLimitMap.get(ip);
+  if (!entry || now > entry.resetTime) {
+    rateLimitMap.set(ip, { count: 1, resetTime: now + RATE_LIMIT_WINDOW });
+    return true;
+  }
+  if (entry.count >= RATE_LIMIT_MAX) return false;
+  entry.count++;
+  return true;
+}
+
+// --- In-memory cache (24h TTL, no external deps) ---
+const cache = new Map<string, { data: unknown; expiry: number }>();
+const CACHE_TTL = 24 * 60 * 60 * 1000;
+
+function getCached(key: string) {
+  const entry = cache.get(key);
+  if (entry && Date.now() < entry.expiry) return entry.data;
+  cache.delete(key);
+  return null;
+}
+
+function setCache(key: string, data: unknown) {
+  cache.set(key, { data, expiry: Date.now() + CACHE_TTL });
+  if (cache.size > 100) {
+    const now = Date.now();
+    for (const [k, v] of cache) {
+      if (now > v.expiry) cache.delete(k);
+    }
+  }
+}
+
+// --- Helpers ---
+function chunkArray<T>(arr: T[], size: number): T[][] {
+  const chunks: T[][] = [];
+  for (let i = 0; i < arr.length; i += size) chunks.push(arr.slice(i, i + size));
+  return chunks;
+}
+
+interface VideoResult {
+  title: string;
+  videoId: string;
+  views: number;
+  likes: number;
+  thumbnail: string;
+  publishedAt: string;
+  duration: string;
+}
+
+function sortVideos(videos: VideoResult[], sortMode: string | null): VideoResult[] {
+  const copy = [...videos];
+  if (sortMode === 'ratio') {
+    return copy.sort((a, b) =>
+      (b.views > 0 ? b.likes / b.views : 0) - (a.views > 0 ? a.likes / a.views : 0)
+    );
+  }
+  return copy.sort((a, b) => b.likes - a.likes);
+}
+
+// --- Main handler ---
 export async function GET(request: NextRequest) {
   try {
-    // Check for API key first
-    if (!process.env.YOUTUBE_API_KEY) {
+    const ip = request.headers.get('x-forwarded-for') || request.headers.get('x-real-ip') || 'unknown';
+    if (!checkRateLimit(ip)) {
       return NextResponse.json(
-        { error: 'YouTube API key is not configured' },
-        { status: 500 }
+        { error: 'Too many requests. Please wait a minute.' },
+        { status: 429 }
       );
     }
 
-    // 1. Parse the query parameters from the request URL
+    if (!process.env.YOUTUBE_API_KEY) {
+      return NextResponse.json({ error: 'YouTube API key is not configured' }, { status: 500 });
+    }
+
     const { searchParams } = new URL(request.url);
     const channelUrl = searchParams.get('channelUrl');
     const sortMode = searchParams.get('sortMode');
@@ -35,67 +103,42 @@ export async function GET(request: NextRequest) {
     if (!channelUrl) {
       return NextResponse.json({ error: 'Missing channelUrl param' }, { status: 400 });
     }
-
-    // Validate maxVideos
     if (maxVideos < 50 || maxVideos > 350) {
-      return NextResponse.json(
-        { error: 'maxVideos must be between 50 and 350' },
-        { status: 400 }
-      );
+      return NextResponse.json({ error: 'maxVideos must be between 50 and 350' }, { status: 400 });
     }
 
-    // 2. Extract channelId (or identifier) from the provided channelUrl
     const identifier = getChannelIdFromUrl(channelUrl);
     if (!identifier) {
       return NextResponse.json({ error: 'Could not parse channel URL' }, { status: 400 });
     }
 
-    // 3. Resolve the channel ID based on the identifier type
+    // Check server-side cache
+    const cacheKey = `${identifier}:${maxVideos}`;
+    const cached = getCached(cacheKey) as VideoResult[] | null;
+    if (cached) {
+      return NextResponse.json({ data: sortVideos(cached, sortMode), cached: true }, { status: 200 });
+    }
+
+    // Resolve channel ID
     let channelId: string;
-    
     if (identifier.startsWith('UC')) {
-      // Direct channel ID
       channelId = identifier;
     } else if (identifier.startsWith('@')) {
-      // Handle format
-      const username = identifier.slice(1);
-      channelId = await resolveChannelIdFromUsername(username);
+      channelId = await resolveChannelIdFromUsername(identifier.slice(1));
     } else if (identifier.startsWith('c/')) {
-      // Custom URL format
-      const customUrl = identifier.slice(2);
-      channelId = await resolveChannelIdFromCustomUrl(customUrl);
+      channelId = await resolveChannelIdFromCustomUrl(identifier.slice(2));
     } else {
       return NextResponse.json({ error: 'Invalid channel identifier' }, { status: 400 });
     }
 
-    // 4. Fetch videos for that channel
+    // Fetch videos from search endpoint
     const videos = await getChannelVideos(channelId, maxVideos);
 
-    // 5. For each video, fetch stats (views & likes)
-    const videosWithStats = await Promise.all(
-      videos.map(async (v: YouTubeVideoItem) => {
-        const stats = await getVideoStats(v.id.videoId);
-        return {
-          title: v.snippet.title,
-          videoId: v.id.videoId,
-          views: Number(stats.viewCount || 0),
-          likes: Number(stats.likeCount || 0),
-        };
-      })
-    );
+    // BATCH stats: 50 IDs per call instead of 1 (98% quota reduction)
+    const videosWithStats = await batchGetVideoStats(videos);
 
-    // 6. Sort them
-    let sorted;
-    if (sortMode === 'ratio') {
-      // sort by like:views ratio
-      sorted = videosWithStats.sort((a, b) => b.likes / b.views - a.likes / a.views);
-    } else {
-      // default to sort by likes
-      sorted = videosWithStats.sort((a, b) => b.likes - a.likes);
-    }
-
-    // 7. Return the data as JSON
-    return NextResponse.json({ data: sorted }, { status: 200 });
+    setCache(cacheKey, videosWithStats);
+    return NextResponse.json({ data: sortVideos(videosWithStats, sortMode) }, { status: 200 });
   } catch (err: unknown) {
     const error = err as ApiError;
     console.error('API Error:', error);
@@ -106,7 +149,42 @@ export async function GET(request: NextRequest) {
   }
 }
 
-// Helper function to fetch from YouTube API
+// --- Batch video stats (50 per call) ---
+async function batchGetVideoStats(videos: YouTubeSearchItem[]): Promise<VideoResult[]> {
+  const videoIds = videos.map(v => v.id.videoId);
+  const chunks = chunkArray(videoIds, 50);
+
+  const statsMap = new Map<string, { viewCount: string; likeCount: string; duration: string }>();
+
+  for (const chunk of chunks) {
+    const url = `https://www.googleapis.com/youtube/v3/videos?id=${chunk.join(',')}&part=statistics,contentDetails&key=${process.env.YOUTUBE_API_KEY}`;
+    const data = await fetchYouTubeAPI(url);
+    if (data.items) {
+      for (const item of data.items) {
+        statsMap.set(item.id, {
+          viewCount: item.statistics?.viewCount || '0',
+          likeCount: item.statistics?.likeCount || '0',
+          duration: item.contentDetails?.duration || 'PT0S',
+        });
+      }
+    }
+  }
+
+  return videos.map(v => {
+    const stats = statsMap.get(v.id.videoId);
+    return {
+      title: v.snippet.title,
+      videoId: v.id.videoId,
+      views: Number(stats?.viewCount || 0),
+      likes: Number(stats?.likeCount || 0),
+      thumbnail: v.snippet.thumbnails?.medium?.url || '',
+      publishedAt: v.snippet.publishedAt || '',
+      duration: stats?.duration || 'PT0S',
+    };
+  });
+}
+
+// --- YouTube API helpers ---
 async function fetchYouTubeAPI(url: string) {
   const response = await fetch(url);
   if (!response.ok) {
@@ -117,72 +195,44 @@ async function fetchYouTubeAPI(url: string) {
   return await response.json();
 }
 
-// Function to resolve channel ID from a username/handle
 async function resolveChannelIdFromUsername(username: string): Promise<string> {
-  // First try the forUsername endpoint
   try {
     const data = await fetchYouTubeAPI(
       `https://www.googleapis.com/youtube/v3/channels?key=${process.env.YOUTUBE_API_KEY}&forUsername=${username}&part=id`
     );
-    if (data.items && data.items.length > 0) {
-      return data.items[0].id;
-    }
+    if (data.items?.length > 0) return data.items[0].id;
   } catch {
     console.log('forUsername lookup failed, trying search...');
   }
-
-  // If that fails, try searching for the channel
   return resolveChannelIdFromCustomUrl(username);
 }
 
-// Function to resolve channel ID from a custom URL
 async function resolveChannelIdFromCustomUrl(customUrl: string): Promise<string> {
   try {
-    // Search for the channel
     const searchData = await fetchYouTubeAPI(
       `https://www.googleapis.com/youtube/v3/search?part=snippet&q=${encodeURIComponent(customUrl)}&type=channel&maxResults=5&key=${process.env.YOUTUBE_API_KEY}`
     );
+    if (!searchData.items?.length) throw new Error('Channel not found');
 
-    if (!searchData.items || searchData.items.length === 0) {
-      throw new Error('Channel not found');
-    }
-
-    // For each result, verify if it matches our custom URL
     for (const item of searchData.items) {
       const channelId = item.id.channelId;
-      
-      // Get the channel's custom URL
       const channelData = await fetchYouTubeAPI(
         `https://www.googleapis.com/youtube/v3/channels?part=snippet&id=${channelId}&key=${process.env.YOUTUBE_API_KEY}`
       );
-
-      if (channelData.items && channelData.items.length > 0) {
-        const channel = channelData.items[0];
-        let channelCustomUrl = channel.snippet.customUrl;
-        
+      if (channelData.items?.length) {
+        let channelCustomUrl = channelData.items[0].snippet.customUrl;
         if (channelCustomUrl) {
-          // Remove leading '@' if present and convert to lower case (like in your old code)
           channelCustomUrl = channelCustomUrl.replace(/^@/, '').toLowerCase();
-          const lowerCustomName = customUrl.toLowerCase();
-
-          if (channelCustomUrl === lowerCustomName) {
-            return channelId;
-          }
+          if (channelCustomUrl === customUrl.toLowerCase()) return channelId;
         }
       }
     }
 
-    // If we haven't found a match, try one more time with the channel name
-    // This is because sometimes the custom URL might not match exactly
-    const channelId = searchData.items[0].id.channelId;
-    const channelData = await fetchYouTubeAPI(
-      `https://www.googleapis.com/youtube/v3/channels?part=snippet&id=${channelId}&key=${process.env.YOUTUBE_API_KEY}`
+    const fallbackId = searchData.items[0].id.channelId;
+    const fallbackData = await fetchYouTubeAPI(
+      `https://www.googleapis.com/youtube/v3/channels?part=snippet&id=${fallbackId}&key=${process.env.YOUTUBE_API_KEY}`
     );
-
-    if (channelData.items && channelData.items.length > 0) {
-      return channelId;
-    }
-
+    if (fallbackData.items?.length) return fallbackId;
     throw new Error('Could not find matching channel');
   } catch (error) {
     console.error('Error resolving custom URL:', error);
@@ -191,27 +241,17 @@ async function resolveChannelIdFromCustomUrl(customUrl: string): Promise<string>
 }
 
 async function getChannelVideos(channelId: string, maxVideos: number = 50) {
-  let allVideos: YouTubeVideoItem[] = [];
+  let allVideos: YouTubeSearchItem[] = [];
   let nextPageToken: string | undefined = undefined;
-  
+
   do {
     const url = `https://www.googleapis.com/youtube/v3/search?channelId=${channelId}&part=snippet,id&type=video&maxResults=50&order=date&key=${process.env.YOUTUBE_API_KEY}${nextPageToken ? `&pageToken=${nextPageToken}` : ''}`;
     const data = await fetchYouTubeAPI(url);
-
     if (!data.items) break;
-    
     allVideos = [...allVideos, ...data.items];
     nextPageToken = data.nextPageToken;
-    
     if (allVideos.length >= maxVideos) break;
-    
   } while (nextPageToken);
 
   return allVideos;
-}
-
-async function getVideoStats(videoId: string) {
-  const url = `https://www.googleapis.com/youtube/v3/videos?id=${videoId}&part=statistics&key=${process.env.YOUTUBE_API_KEY}`;
-  const data = await fetchYouTubeAPI(url);
-  return data.items?.[0]?.statistics || {};
 }
