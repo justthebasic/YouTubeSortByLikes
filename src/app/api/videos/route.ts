@@ -103,8 +103,8 @@ export async function GET(request: NextRequest) {
     if (!channelUrl) {
       return NextResponse.json({ error: 'Missing channelUrl param' }, { status: 400 });
     }
-    if (maxVideos < 50 || maxVideos > 350) {
-      return NextResponse.json({ error: 'maxVideos must be between 50 and 350' }, { status: 400 });
+    if (maxVideos < 50 || maxVideos > 1000) {
+      return NextResponse.json({ error: 'maxVideos must be between 50 and 1000' }, { status: 400 });
     }
 
     const identifier = getChannelIdFromUrl(channelUrl);

@@ -53,11 +53,11 @@ export default function HomePage() {
     const max = params.get("max");
     if (ch) setChannelUrl(ch);
     if (sort === "likes" || sort === "ratio") setSortMode(sort);
-    if (max) setMaxVideos(Math.min(350, Math.max(50, Number(max))));
+    if (max) setMaxVideos(Math.min(1000, Math.max(50, Number(max))));
   }, []);
 
   const getSliderBackground = (value: number) => {
-    const pct = ((value - 50) / 300) * 100;
+    const pct = ((value - 50) / 950) * 100;
     return `linear-gradient(to right, var(--accent-color) ${pct}%, var(--slider-track) ${pct}%)`;
   };
 
@@ -109,7 +109,7 @@ export default function HomePage() {
       result.sort((a, b) => {
         let aValue: number;
         let bValue: number;
-        
+
         if (sortConfig.key === 'ratio') {
           aValue = a.views > 0 ? a.likes / a.views : 0;
           bValue = b.views > 0 ? b.likes / b.views : 0;
@@ -240,7 +240,7 @@ export default function HomePage() {
                   type="range"
                   id="max_videos"
                   min="50"
-                  max="350"
+                  max="1000"
                   step="50"
                   value={maxVideos}
                   onChange={(e) => setMaxVideos(Number(e.target.value))}
