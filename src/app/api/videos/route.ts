@@ -68,15 +68,11 @@ interface VideoResult {
   thumbnail: string;
   publishedAt: string;
   duration: string;
+  comments: number;
 }
 
-function sortVideos(videos: VideoResult[], sortMode: string | null): VideoResult[] {
+function sortVideos(videos: VideoResult[]): VideoResult[] {
   const copy = [...videos];
-  if (sortMode === 'ratio') {
-    return copy.sort((a, b) =>
-      (b.views > 0 ? b.likes / b.views : 0) - (a.views > 0 ? a.likes / a.views : 0)
-    );
-  }
   return copy.sort((a, b) => b.likes - a.likes);
 }
 
@@ -97,7 +93,6 @@ export async function GET(request: NextRequest) {
 
     const { searchParams } = new URL(request.url);
     const channelUrl = searchParams.get('channelUrl');
-    const sortMode = searchParams.get('sortMode');
     const maxVideos = Number(searchParams.get('maxVideos')) || 50;
 
     if (!channelUrl) {
@@ -116,7 +111,7 @@ export async function GET(request: NextRequest) {
     const cacheKey = `${identifier}:${maxVideos}`;
     const cached = getCached(cacheKey) as VideoResult[] | null;
     if (cached) {
-      return NextResponse.json({ data: sortVideos(cached, sortMode), cached: true }, { status: 200 });
+      return NextResponse.json({ data: sortVideos(cached), cached: true }, { status: 200 });
     }
 
     // Resolve channel ID
@@ -138,7 +133,7 @@ export async function GET(request: NextRequest) {
     const videosWithStats = await batchGetVideoStats(videos);
 
     setCache(cacheKey, videosWithStats);
-    return NextResponse.json({ data: sortVideos(videosWithStats, sortMode) }, { status: 200 });
+    return NextResponse.json({ data: sortVideos(videosWithStats) }, { status: 200 });
   } catch (err: unknown) {
     const error = err as ApiError;
     console.error('API Error:', error);
@@ -154,7 +149,7 @@ async function batchGetVideoStats(videos: YouTubeSearchItem[]): Promise<VideoRes
   const videoIds = videos.map(v => v.id.videoId);
   const chunks = chunkArray(videoIds, 50);
 
-  const statsMap = new Map<string, { viewCount: string; likeCount: string; duration: string }>();
+  const statsMap = new Map<string, { viewCount: string; likeCount: string; duration: string; commentCount: string }>();
 
   for (const chunk of chunks) {
     const url = `https://www.googleapis.com/youtube/v3/videos?id=${chunk.join(',')}&part=statistics,contentDetails&key=${process.env.YOUTUBE_API_KEY}`;
@@ -164,6 +159,7 @@ async function batchGetVideoStats(videos: YouTubeSearchItem[]): Promise<VideoRes
         statsMap.set(item.id, {
           viewCount: item.statistics?.viewCount || '0',
           likeCount: item.statistics?.likeCount || '0',
+          commentCount: item.statistics?.commentCount || '0',
           duration: item.contentDetails?.duration || 'PT0S',
         });
       }
@@ -180,6 +176,7 @@ async function batchGetVideoStats(videos: YouTubeSearchItem[]): Promise<VideoRes
       thumbnail: v.snippet.thumbnails?.medium?.url || '',
       publishedAt: v.snippet.publishedAt || '',
       duration: stats?.duration || 'PT0S',
+      comments: Number(stats?.commentCount || 0),
     };
   });
 }

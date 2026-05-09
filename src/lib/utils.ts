@@ -50,18 +50,24 @@ export interface VideoData {
   thumbnail: string;
   publishedAt: string;
   duration: string; // ISO 8601
+  comments: number;
 }
 
 /** Export video data to CSV and trigger download */
 export function exportToCSV(videos: VideoData[], filename = 'videos.csv') {
-  const header = 'Rank,Title,Likes,Views,Ratio (%),Duration,Published,URL\n';
+  const header = 'Rank,Title,Likes,Comments,Views,Ratio (%),Engagement (%),Velocity (Views/Day),Duration,Published,URL\n';
   const rows = videos.map((v, i) => {
     const ratio = v.views > 0 ? ((v.likes / v.views) * 100).toFixed(2) : '0';
+    const engagement = v.views > 0 ? (((v.likes + v.comments) / v.views) * 100).toFixed(2) : '0';
+    
+    const daysSincePublished = Math.max(1, (Date.now() - new Date(v.publishedAt).getTime()) / (1000 * 60 * 60 * 24));
+    const velocity = (v.views / daysSincePublished).toFixed(0);
+
     const dur = formatDuration(parseDuration(v.duration));
     const date = new Date(v.publishedAt).toISOString().split('T')[0];
     const url = `https://www.youtube.com/watch?v=${v.videoId}`;
     const title = v.title.replace(/"/g, '""');
-    return `${i + 1},"${title}",${v.likes},${v.views},${ratio},${dur},${date},${url}`;
+    return `${i + 1},"${title}",${v.likes},${v.comments},${v.views},${ratio},${engagement},${velocity},${dur},${date},${url}`;
   });
   const blob = new Blob([header + rows.join('\n')], { type: 'text/csv;charset=utf-8;' });
   downloadBlob(blob, filename);
@@ -69,16 +75,22 @@ export function exportToCSV(videos: VideoData[], filename = 'videos.csv') {
 
 /** Export video data to JSON and trigger download */
 export function exportToJSON(videos: VideoData[], filename = 'videos.json') {
-  const data = videos.map((v, i) => ({
-    rank: i + 1,
-    title: v.title,
-    likes: v.likes,
-    views: v.views,
-    ratio: v.views > 0 ? parseFloat(((v.likes / v.views) * 100).toFixed(2)) : 0,
-    duration: formatDuration(parseDuration(v.duration)),
-    publishedAt: v.publishedAt,
-    url: `https://www.youtube.com/watch?v=${v.videoId}`,
-  }));
+  const data = videos.map((v, i) => {
+    const daysSincePublished = Math.max(1, (Date.now() - new Date(v.publishedAt).getTime()) / (1000 * 60 * 60 * 24));
+    return {
+      rank: i + 1,
+      title: v.title,
+      likes: v.likes,
+      comments: v.comments,
+      views: v.views,
+      ratio: v.views > 0 ? parseFloat(((v.likes / v.views) * 100).toFixed(2)) : 0,
+      engagement: v.views > 0 ? parseFloat((((v.likes + v.comments) / v.views) * 100).toFixed(2)) : 0,
+      velocity: Math.round(v.views / daysSincePublished),
+      duration: formatDuration(parseDuration(v.duration)),
+      publishedAt: v.publishedAt,
+      url: `https://www.youtube.com/watch?v=${v.videoId}`,
+    };
+  });
   const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
   downloadBlob(blob, filename);
 }

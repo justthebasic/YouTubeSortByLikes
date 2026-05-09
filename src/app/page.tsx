@@ -12,9 +12,8 @@ import {
   VideoData,
 } from "@/lib/utils";
 
-type SortMode = "likes" | "ratio";
 type DurationFilter = "all" | "short" | "long";
-type SortKey = "likes" | "views" | "ratio" | "duration" | "publishedAt";
+type SortKey = "likes" | "views" | "ratio" | "duration" | "publishedAt" | "comments" | "engagement" | "velocity";
 type SortConfig = { key: SortKey; direction: "asc" | "desc" } | null;
 
 export default function HomePage() {
@@ -23,7 +22,6 @@ export default function HomePage() {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [maxVideos, setMaxVideos] = useState(50);
-  const [sortMode, setSortMode] = useState<SortMode>("likes");
   const [darkMode, setDarkMode] = useState(false);
   const [sortConfig, setSortConfig] = useState<SortConfig>(null);
 
@@ -49,10 +47,8 @@ export default function HomePage() {
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const ch = params.get("channel");
-    const sort = params.get("sort") as SortMode | null;
     const max = params.get("max");
     if (ch) setChannelUrl(ch);
-    if (sort === "likes" || sort === "ratio") setSortMode(sort);
     if (max) setMaxVideos(Math.min(1000, Math.max(50, Number(max))));
   }, []);
 
@@ -61,9 +57,8 @@ export default function HomePage() {
     return `linear-gradient(to right, var(--accent-color) ${pct}%, var(--slider-track) ${pct}%)`;
   };
 
-  async function fetchVideos(mode: SortMode) {
+  async function fetchVideos() {
     if (!channelUrl.trim()) return;
-    setSortMode(mode);
     setLoading(true);
     setError(null);
     setVideos([]);
@@ -71,14 +66,12 @@ export default function HomePage() {
     // Update shareable URL
     const url = new URL(window.location.href);
     url.searchParams.set("channel", channelUrl.trim());
-    url.searchParams.set("sort", mode);
     url.searchParams.set("max", maxVideos.toString());
     window.history.replaceState({}, "", url.toString());
 
     try {
       const qp = new URLSearchParams({
         channelUrl: channelUrl.trim(),
-        sortMode: mode,
         maxVideos: maxVideos.toString(),
       });
       const res = await fetch(`/api/videos?${qp}`);
@@ -113,6 +106,14 @@ export default function HomePage() {
         if (sortConfig.key === 'ratio') {
           aValue = a.views > 0 ? a.likes / a.views : 0;
           bValue = b.views > 0 ? b.likes / b.views : 0;
+        } else if (sortConfig.key === 'engagement') {
+          aValue = a.views > 0 ? (a.likes + a.comments) / a.views : 0;
+          bValue = b.views > 0 ? (b.likes + b.comments) / b.views : 0;
+        } else if (sortConfig.key === 'velocity') {
+          const aDays = Math.max(1, (Date.now() - new Date(a.publishedAt).getTime()) / (1000 * 60 * 60 * 24));
+          const bDays = Math.max(1, (Date.now() - new Date(b.publishedAt).getTime()) / (1000 * 60 * 60 * 24));
+          aValue = a.views / aDays;
+          bValue = b.views / bDays;
         } else if (sortConfig.key === 'duration') {
           aValue = parseDuration(a.duration);
           bValue = parseDuration(b.duration);
@@ -210,7 +211,7 @@ export default function HomePage() {
               Find the best quality videos from any channel! Paste a YouTube channel URL below.
             </p>
 
-            <form onSubmit={(e) => { e.preventDefault(); fetchVideos(sortMode); }} className="space-y-5">
+            <form onSubmit={(e) => { e.preventDefault(); fetchVideos(); }} className="space-y-5">
               {/* URL Input */}
               <div className="relative">
                 <div
@@ -249,12 +250,9 @@ export default function HomePage() {
               </div>
 
               {/* Buttons */}
-              <div className="grid grid-cols-2 gap-3">
-                <BrutalButton onClick={() => fetchVideos("likes")} type="submit" variant="secondary">
-                  Sort by Likes
-                </BrutalButton>
-                <BrutalButton onClick={() => fetchVideos("ratio")} type="button" variant="primary">
-                  Sort by Ratio
+              <div className="mt-2">
+                <BrutalButton onClick={() => fetchVideos()} type="submit" variant="primary">
+                  Fetch Videos
                 </BrutalButton>
               </div>
             </form>
@@ -383,11 +381,20 @@ export default function HomePage() {
                       <th className="px-2 py-3 text-right font-bold cursor-pointer hover:underline" onClick={() => requestSort('likes')}>
                         Likes {getSortIcon('likes')}
                       </th>
+                      <th className="px-2 py-3 text-right font-bold cursor-pointer hover:underline" onClick={() => requestSort('comments')}>
+                        Comments {getSortIcon('comments')}
+                      </th>
                       <th className="px-2 py-3 text-right font-bold cursor-pointer hover:underline" onClick={() => requestSort('views')}>
                         Views {getSortIcon('views')}
                       </th>
                       <th className="px-2 py-3 text-right font-bold cursor-pointer hover:underline" onClick={() => requestSort('ratio')}>
-                        Ratio {getSortIcon('ratio')}
+                        Like % {getSortIcon('ratio')}
+                      </th>
+                      <th className="px-2 py-3 text-right font-bold cursor-pointer hover:underline" onClick={() => requestSort('engagement')}>
+                        Engage % {getSortIcon('engagement')}
+                      </th>
+                      <th className="px-2 py-3 text-right font-bold cursor-pointer hover:underline" onClick={() => requestSort('velocity')}>
+                        Velocity {getSortIcon('velocity')}
                       </th>
                       <th className="px-2 py-3 text-right font-bold hidden md:table-cell cursor-pointer hover:underline" onClick={() => requestSort('duration')}>
                         Duration {getSortIcon('duration')}
@@ -400,6 +407,9 @@ export default function HomePage() {
                   <tbody>
                     {filteredVideos.map((v, idx) => {
                       const ratio = v.views > 0 ? ((v.likes / v.views) * 100).toFixed(2) : "0.00";
+                      const engagement = v.views > 0 ? (((v.likes + v.comments) / v.views) * 100).toFixed(2) : "0.00";
+                      const daysSincePublished = Math.max(1, (Date.now() - new Date(v.publishedAt).getTime()) / (1000 * 60 * 60 * 24));
+                      const velocity = Math.round(v.views / daysSincePublished);
                       const durationSecs = parseDuration(v.duration);
                       return (
                         <tr
@@ -441,11 +451,20 @@ export default function HomePage() {
                           <td className="px-2 py-2.5 text-right font-medium tabular-nums">
                             {formatNumber(v.likes)}
                           </td>
+                          <td className="px-2 py-2.5 text-right font-medium tabular-nums">
+                            {formatNumber(v.comments)}
+                          </td>
                           <td className="px-2 py-2.5 text-right tabular-nums" style={{ color: "var(--text-secondary)" }}>
                             {formatNumber(v.views)}
                           </td>
                           <td className="px-2 py-2.5 text-right font-medium tabular-nums">
                             {ratio}%
+                          </td>
+                          <td className="px-2 py-2.5 text-right font-medium tabular-nums" style={{ color: "var(--accent-color)" }}>
+                            {engagement}%
+                          </td>
+                          <td className="px-2 py-2.5 text-right font-medium tabular-nums" title={`${formatNumber(velocity)} views/day`}>
+                            {formatNumber(velocity)}/d
                           </td>
                           <td className="px-2 py-2.5 text-right tabular-nums hidden md:table-cell" style={{ color: "var(--text-secondary)" }}>
                             {formatDuration(durationSecs)}
