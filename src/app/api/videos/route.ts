@@ -135,7 +135,13 @@ export async function GET(request: NextRequest) {
     if (playlistId) {
       videos = await getPlaylistVideos(playlistId, maxVideos);
     } else if (channelId) {
-      videos = await getChannelVideos(channelId, maxVideos);
+      const uploadsId = await getUploadsPlaylistId(channelId);
+      if (uploadsId) {
+        videos = await getPlaylistVideos(uploadsId, maxVideos);
+      } else {
+        // Fallback to search if uploads playlist not found
+        videos = await getChannelVideos(channelId, maxVideos);
+      }
     }
 
     // BATCH stats: 50 IDs per call instead of 1 (98% quota reduction)
@@ -286,4 +292,16 @@ async function getPlaylistVideos(playlistId: string, maxVideos: number = 50) {
   } while (nextPageToken);
 
   return allVideos;
+}
+
+async function getUploadsPlaylistId(channelId: string): Promise<string | null> {
+  try {
+    const data = await fetchYouTubeAPI(
+      `https://www.googleapis.com/youtube/v3/channels?id=${channelId}&part=contentDetails&key=${process.env.YOUTUBE_API_KEY}`
+    );
+    return data.items?.[0]?.contentDetails?.relatedPlaylists?.uploads || null;
+  } catch (error) {
+    console.error('Error fetching uploads playlist ID:', error);
+    return null;
+  }
 }
