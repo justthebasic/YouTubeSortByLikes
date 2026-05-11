@@ -14,6 +14,12 @@ export function getChannelIdFromUrl(urlString: string): string | null {
 			return null;
 		}
 
+		// Handle playlist URLs first
+		const listId = url.searchParams.get("list");
+		if (listId) {
+			return `playlist/${listId}`;
+		}
+
 		// Remove trailing slashes and query parameters
 		const cleanPath = url.pathname.replace(/\/+$/, "");
 

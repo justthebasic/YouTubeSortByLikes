@@ -104,7 +104,7 @@ export async function GET(request: NextRequest) {
 
     const identifier = getChannelIdFromUrl(channelUrl);
     if (!identifier) {
-      return NextResponse.json({ error: 'Could not parse channel URL' }, { status: 400 });
+      return NextResponse.json({ error: 'Could not parse channel or playlist URL' }, { status: 400 });
     }
 
     // Check server-side cache
@@ -114,20 +114,29 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ data: sortVideos(cached), cached: true }, { status: 200 });
     }
 
-    // Resolve channel ID
-    let channelId: string;
-    if (identifier.startsWith('UC')) {
+    // Resolve channel ID or playlist ID
+    let channelId: string | undefined;
+    let playlistId: string | undefined;
+
+    if (identifier.startsWith('playlist/')) {
+      playlistId = identifier.split('/')[1];
+    } else if (identifier.startsWith('UC')) {
       channelId = identifier;
     } else if (identifier.startsWith('@')) {
       channelId = await resolveChannelIdFromUsername(identifier.slice(1));
     } else if (identifier.startsWith('c/')) {
       channelId = await resolveChannelIdFromCustomUrl(identifier.slice(2));
     } else {
-      return NextResponse.json({ error: 'Invalid channel identifier' }, { status: 400 });
+      return NextResponse.json({ error: 'Invalid channel or playlist identifier' }, { status: 400 });
     }
 
-    // Fetch videos from search endpoint
-    const videos = await getChannelVideos(channelId, maxVideos);
+    // Fetch videos from search endpoint or playlist items
+    let videos: YouTubeSearchItem[] = [];
+    if (playlistId) {
+      videos = await getPlaylistVideos(playlistId, maxVideos);
+    } else if (channelId) {
+      videos = await getChannelVideos(channelId, maxVideos);
+    }
 
     // BATCH stats: 50 IDs per call instead of 1 (98% quota reduction)
     const videosWithStats = await batchGetVideoStats(videos);
@@ -246,6 +255,32 @@ async function getChannelVideos(channelId: string, maxVideos: number = 50) {
     const data = await fetchYouTubeAPI(url);
     if (!data.items) break;
     allVideos = [...allVideos, ...data.items];
+    nextPageToken = data.nextPageToken;
+    if (allVideos.length >= maxVideos) break;
+  } while (nextPageToken);
+
+  return allVideos;
+}
+
+async function getPlaylistVideos(playlistId: string, maxVideos: number = 50) {
+  let allVideos: YouTubeSearchItem[] = [];
+  let nextPageToken: string | undefined = undefined;
+
+  do {
+    const url = `https://www.googleapis.com/youtube/v3/playlistItems?playlistId=${playlistId}&part=snippet&maxResults=50&key=${process.env.YOUTUBE_API_KEY}${nextPageToken ? `&pageToken=${nextPageToken}` : ''}`;
+    const data = await fetchYouTubeAPI(url);
+    if (!data.items) break;
+    
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const mappedItems = data.items.map((item: any) => ({
+      id: { videoId: item.snippet.resourceId.videoId },
+      snippet: {
+        title: item.snippet.title,
+        publishedAt: item.snippet.publishedAt,
+        thumbnails: item.snippet.thumbnails
+      }
+    }));
+    allVideos = [...allVideos, ...mappedItems];
     nextPageToken = data.nextPageToken;
     if (allVideos.length >= maxVideos) break;
   } while (nextPageToken);

@@ -208,7 +208,7 @@ export default function HomePage() {
             style={{ background: "var(--bg-card)", borderColor: "var(--border-color)" }}
           >
             <p className="text-center mb-6" style={{ color: "var(--text-secondary)" }}>
-              Find the best quality videos from any channel! Paste a YouTube channel URL below.
+              Find the best quality videos from any channel or playlist! Paste a YouTube channel or playlist URL below.
             </p>
 
             <form onSubmit={(e) => { e.preventDefault(); fetchVideos(); }} className="space-y-5">
@@ -220,7 +220,7 @@ export default function HomePage() {
                 />
                 <input
                   type="text"
-                  placeholder="e.g. https://www.youtube.com/@veritasium"
+                  placeholder="e.g. https://www.youtube.com/@veritasium or a playlist URL"
                   value={channelUrl}
                   onChange={(e) => setChannelUrl(e.target.value)}
                   className="block w-full rounded border-[3px] px-5 py-3.5 relative z-10 focus:outline-none transition-transform placeholder:opacity-50 text-sm md:text-base"
