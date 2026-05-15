@@ -69,6 +69,7 @@ interface VideoResult {
   publishedAt: string;
   duration: string;
   comments: number;
+  description: string;
 }
 
 function sortVideos(videos: VideoResult[]): VideoResult[] {
@@ -164,10 +165,10 @@ async function batchGetVideoStats(videos: YouTubeSearchItem[]): Promise<VideoRes
   const videoIds = videos.map(v => v.id.videoId);
   const chunks = chunkArray(videoIds, 50);
 
-  const statsMap = new Map<string, { viewCount: string; likeCount: string; duration: string; commentCount: string }>();
+  const statsMap = new Map<string, { viewCount: string; likeCount: string; duration: string; commentCount: string; description: string }>();
 
   for (const chunk of chunks) {
-    const url = `https://www.googleapis.com/youtube/v3/videos?id=${chunk.join(',')}&part=statistics,contentDetails&key=${process.env.YOUTUBE_API_KEY}`;
+    const url = `https://www.googleapis.com/youtube/v3/videos?id=${chunk.join(',')}&part=statistics,contentDetails,snippet&key=${process.env.YOUTUBE_API_KEY}`;
     const data = await fetchYouTubeAPI(url);
     if (data.items) {
       for (const item of data.items) {
@@ -176,6 +177,7 @@ async function batchGetVideoStats(videos: YouTubeSearchItem[]): Promise<VideoRes
           likeCount: item.statistics?.likeCount || '0',
           commentCount: item.statistics?.commentCount || '0',
           duration: item.contentDetails?.duration || 'PT0S',
+          description: item.snippet?.description || '',
         });
       }
     }
@@ -192,6 +194,7 @@ async function batchGetVideoStats(videos: YouTubeSearchItem[]): Promise<VideoRes
       publishedAt: v.snippet.publishedAt || '',
       duration: stats?.duration || 'PT0S',
       comments: Number(stats?.commentCount || 0),
+      description: stats?.description || '',
     };
   });
 }

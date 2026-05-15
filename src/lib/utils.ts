@@ -51,11 +51,12 @@ export interface VideoData {
   publishedAt: string;
   duration: string; // ISO 8601
   comments: number;
+  description: string;
 }
 
 /** Export video data to CSV and trigger download */
 export function exportToCSV(videos: VideoData[], filename = 'videos.csv') {
-  const header = 'Rank,Title,Likes,Comments,Views,Ratio (%),Engagement (%),Velocity (Views/Day),Duration,Published,URL\n';
+  const header = 'Rank,Title,Likes,Comments,Views,Ratio (%),Engagement (%),Velocity (Views/Day),Duration,Published,URL,Description\n';
   const rows = videos.map((v, i) => {
     const ratio = v.views > 0 ? ((v.likes / v.views) * 100).toFixed(2) : '0';
     const engagement = v.views > 0 ? (((v.likes + v.comments) / v.views) * 100).toFixed(2) : '0';
@@ -67,7 +68,8 @@ export function exportToCSV(videos: VideoData[], filename = 'videos.csv') {
     const date = new Date(v.publishedAt).toISOString().split('T')[0];
     const url = `https://www.youtube.com/watch?v=${v.videoId}`;
     const title = v.title.replace(/"/g, '""');
-    return `${i + 1},"${title}",${v.likes},${v.comments},${v.views},${ratio},${engagement},${velocity},${dur},${date},${url}`;
+    const description = v.description ? v.description.replace(/"/g, '""') : '';
+    return `${i + 1},"${title}",${v.likes},${v.comments},${v.views},${ratio},${engagement},${velocity},${dur},${date},${url},"${description}"`;
   });
   const blob = new Blob([header + rows.join('\n')], { type: 'text/csv;charset=utf-8;' });
   downloadBlob(blob, filename);
@@ -89,6 +91,7 @@ export function exportToJSON(videos: VideoData[], filename = 'videos.json') {
       duration: formatDuration(parseDuration(v.duration)),
       publishedAt: v.publishedAt,
       url: `https://www.youtube.com/watch?v=${v.videoId}`,
+      description: v.description || '',
     };
   });
   const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });

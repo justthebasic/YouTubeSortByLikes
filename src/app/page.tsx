@@ -447,6 +447,16 @@ export default function HomePage() {
                             >
                               {decodeHtmlEntities(v.title)}
                             </a>
+                            {v.description && (
+                              <details className="mt-1 group cursor-pointer">
+                                <summary className="text-xs font-medium opacity-60 hover:opacity-100 transition-opacity">
+                                  Ver resumo
+                                </summary>
+                                <div className="mt-2 p-2 rounded text-xs opacity-90 whitespace-pre-wrap max-h-32 overflow-y-auto" style={{ background: "var(--bg-secondary)", border: "1px solid var(--border-light)" }}>
+                                  {v.description}
+                                </div>
+                              </details>
+                            )}
                           </td>
                           <td className="px-2 py-2.5 text-right font-medium tabular-nums">
                             {formatNumber(v.likes)}
